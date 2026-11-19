@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Збирач монет — Міні-гра</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background-color: #181825;
+      color: #cdd6f4;
+      font-family: system-ui, -apple-system, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 15px;
+    }
+    .panel {
+      display: flex;
+      gap: 24px;
+      background: #313244;
+      padding: 12px 24px;
+      border-radius: 10px;
+      margin-bottom: 14px;
+      font-size: 18px;
+      font-weight: 600;
+      box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
+    }
+    .panel span { color: #f9e2af; }
+    #enemySpeed { color: #f38ba8; }
+    canvas {
+      background-color: #11111b;
+      border: 3px solid #89b4fa;
+      border-radius: 10px;
+      max-width: 100%;
+    }
+    .info {
+      margin-top: 12px;
+      font-size: 14px;
+      color: #a6adc8;
+    }
+    button {
+      margin-top: 12px;
+      padding: 10px 22px;
+      font-size: 16px;
+      font-weight: bold;
+      background-color: #a6e3a1;
+      color: #11111b;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: transform 0.1s;
+    }
+    button:active { transform: scale(0.97); }
+  </style>
+</head>
+<body>
+
+  <div class="panel">
+    <div>Рахунок: <span id="score">0</span></div>
+    <div>Час: <span id="timer">60</span> с</div>
+    <div>Ворог: <span id="enemySpeed">120</span> px/с</div>
+  </div>
+
+  <canvas id="canvas" width="600" height="400"></canvas>
+
+  <div class="info">Керування: стрілки ← ↑ ↓ → або клавіші W A S D</div>
+  <button id="restartBtn">Грати знову</button>
+
+  <script>
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+
+    const scoreEl = document.getElementById('score');
+    const timerEl = document.getElementById('timer');
+    const enemySpeedEl = document.getElementById('enemySpeed');
+    const restartBtn = document.getElementById('restartBtn');
+
+    // Стан гри
+    let score = 0;
+    let timeLeft = 60;
+    let gameOver = false;
+    let endMessage = '';
+    let lastTimestamp = 0;
+    let secondTimer = 0;
+
+    // Ігрові сутності
+    const player = { x: 80, y: 200, r: 15, speed: 230, color: '#89b4fa' };
+    const coin = { x: 300, y: 200, r: 10, color: '#f9e2af' };
+    const enemy = { x: 520, y: 200, r: 14, baseSpeed: 120, speed: 120, color: '#f38ba8' };
+
+    // Обробка клавіатури
+    const keys = {};
+    window.addEventListener('keydown', e => keys[e.code] = true);
+    window.addEventListener('keyup', e => keys[e.code] = false);
+
+    // Короткий звуковий ефект збору монети (без зовнішніх mp3-файлів)
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    function playCoinBeep() {
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(523.25, audioCtx.currentTime); // C5
+      osc.frequency.exponentialRampToValueAtTime(1046.5, audioCtx.currentTime + 0.09); // C6
+      gain.gain.setValueAtTime(0.18, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.12);
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start();
+      osc.stop(audioCtx.currentTime + 0.12);
+    }
+
+    // Випадкова поява монети
+    function placeCoin() {
+      const margin = 25;
+      coin.x = margin + Math.random() * (canvas.width - margin * 2);
+      coin.y = margin + Math.random() * (canvas.height - margin * 2);
+    }
+
+    // Перевірка колізії між двома колами
+    function isColliding(a, b) {
+      return Math.hypot(a.x - b.x, a.y - b.y) < a.r + b.r;
+    }
+
+    // Оновлення інтерфейсу
+    function syncUI() {
+      scoreEl.textContent = score;
+      timerEl.textContent = timeLeft;
+      enemySpeedEl.textContent = enemy.speed;
+    }
+
+    // Перезапуск гри
+    function startNewGame() {
+      score = 0;
+      timeLeft = 60;
+      gameOver = false;
+      endMessage = '';
+      secondTimer = 0;
+
+      player.x = 80;
+      player.y = canvas.height / 2;
+      enemy.x = canvas.width - 80;
+      enemy.y = canvas.height / 2;
+      enemy.speed = enemy.baseSpeed;
+
+      placeCoin();
+      syncUI();
+      lastTimestamp = performance.now();
+      requestAnimationFrame(loop);
+    }
+
+    // Логіка оновлення кадрів (dt — час у секундах)
+    function update(dt) {
+      if (gameOver) return;
+
+      // Відлік таймера
+      secondTimer += dt;
+      if (secondTimer >= 1) {
+        timeLeft--;
+        secondTimer -= 1;
+        if (timeLeft <= 0) {
+          timeLeft = 0;
+          gameOver = true;
+          endMessage = 'Час вичерпано!';
+        }
+        syncUI();
+      }
+
+      // Керування гравцем
+      let vx = 0, vy = 0;
+      if (keys['ArrowUp'] || keys['KeyW']) vy -= 1;
+      if (keys['ArrowDown'] || keys['KeyS']) vy += 1;
+      if (keys['ArrowLeft'] || keys['KeyA']) vx -= 1;
+      if (keys['ArrowRight'] || keys['KeyD']) vx += 1;
+
+      if (vx !== 0 && vy !== 0) {
+        const norm = Math.hypot(vx, vy);
+        vx /= norm;
+        vy /= norm;
+      }
+
+      player.x = Math.max(player.r, Math.min(canvas.width - player.r, player.x + vx * player.speed * dt));
+      player.y = Math.max(player.r, Math.min(canvas.height - player.r, player.y + vy * player.speed * dt));
+
+      // Переслідування гравця ворогом
+      const dx = player.x - enemy.x;
+      const dy = player.y - enemy.y;
+      const dist = Math.hypot(dx, dy);
+      if (dist > 0) {
+        enemy.x += (dx / dist) * enemy.speed * dt;
+        enemy.y += (dy / dist) * enemy.speed * dt;
+      }
+
+      // Збір монети
+      if (isColliding(player, coin)) {
+        score++;
+        playCoinBeep();
+        // Кожні +5 очок ворог прискорюється на 10 px/сек
+        enemy.speed = enemy.baseSpeed + Math.floor(score / 5) * 10;
+        placeCoin();
+        syncUI();
+      }
+
+      // Дотик ворога до гравця -> Game Over
+      if (isColliding(player, enemy)) {
+        gameOver = true;
+        endMessage = 'Вас торкнувся ворог!';
+      }
+    }
+
+    // Відмальовка об'єктів
+    function render() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      // Монета
+      ctx.beginPath();
+      ctx.arc(coin.x, coin.y, coin.r, 0, Math.PI * 2);
+      ctx.fillStyle = coin.color;
+      ctx.fill();
+
+      // Гравець
+      ctx.beginPath();
+      ctx.arc(player.x, player.y, player.r, 0, Math.PI * 2);
+      ctx.fillStyle = player.color;
+      ctx.fill();
+
+      // Ворог-переслідувач
+      ctx.beginPath();
+      ctx.arc(enemy.x, enemy.y, enemy.r, 0, Math.PI * 2);
+      ctx.fillStyle = enemy.color;
+      ctx.fill();
+
+      // Екран поразки
+      if (gameOver) {
+        ctx.fillStyle = 'rgba(17, 17, 27, 0.85)';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        ctx.fillStyle = '#f38ba8';
+        ctx.font = 'bold 38px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('GAME OVER', canvas.width / 2, canvas.height / 2 - 25);
+
+        ctx.fillStyle = '#cdd6f4';
+        ctx.font = '20px sans-serif';
+        ctx.fillText(`${endMessage} Підсумковий рахунок: ${score}`, canvas.width / 2, canvas.height / 2 + 20);
+      }
+    }
+
+    // Головний цикл анімації
+    function loop(timestamp) {
+      const dt = (timestamp - lastTimestamp) / 1000;
+      lastTimestamp = timestamp;
+
+      update(dt);
+      render();
+
+      if (!gameOver) requestAnimationFrame(loop);
+    }
+
+    restartBtn.addEventListener('click', startNewGame);
+    startNewGame();
+  </script>
+</body>
+</html>
